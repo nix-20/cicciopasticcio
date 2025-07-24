@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Chat Criptata E2E</title>
+  <style>
+    body { font-family: Arial, sans-serif; max-width: 600px; margin: 20px auto; }
+    #chat { border: 1px solid #ccc; height: 300px; overflow-y: scroll; padding: 10px; margin-top: 10px; }
+    input, select, button { width: 100%; margin: 5px 0; padding: 8px; }
+  </style>
+</head>
+<body>
+  <h2>Registrazione / Login</h2>
+  <input id="email" type="email" placeholder="Email">
+  <input id="password" type="password" placeholder="Password">
+  <button onclick="register()">Registrati</button>
+  <button onclick="login()">Login</button>
+
+  <hr>
+
+  <h2>Chat</h2>
+  <select id="recipient"></select>
+  <input id="message" placeholder="Scrivi un messaggio">
+  <button onclick="sendMessage()">Invia</button>
+
+  <div id="chat"></div>
+
+  <!-- Firebase SDK -->
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-auth.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-firestore.js"></script>
+
+  <!-- TweetNaCl per crittografia -->
+  <script src="https://cdn.jsdelivr.net/npm/tweetnacl/nacl.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/tweetnacl-util/nacl-util.min.js"></script>
+
+  <script>
+    // 🔐 CONFIGURAZIONE FIREBASE – Già completa
+    const firebaseConfig = {
+      apiKey: "AIzaSyCsIeVnq_SJ0qYx-A6qa2H8NgeffzZ2J_I",
+      authDomain: "chat-7fa22.firebaseapp.com",
+      projectId: "chat-7fa22",
+      storageBucket: "chat-7fa22.firebasestorage.app",
+      messagingSenderId: "929377769084",
+      appId: "1:929377769084:web:212acf29cfb7fc2ae05bf9"
+    };
+
+    // INIZIALIZZA FIREBASE PRIMA DI USARE auth/db
+    firebase.initializeApp(firebaseConfig);
+    const auth = firebase.auth();
+    const db = firebase.firestore();
+
+    let myKeyPair = null;
+    let myEmail = null;
+
+    async function register() {
+      try {
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        await auth.createUserWithEmailAndPassword(email, password);
+        myEmail = email;
+
+        myKeyPair = nacl.box.keyPair();
+        const publicKeyBase64 = nacl.util.encodeBase64(myKeyPair.publicKey);
+        await db.collection("users").doc(email).set({ publicKey: publicKeyBase64 });
+
+        alert("Registrazione completata!");
+        await loadUsers();
+        listenForMessages();
+      } catch (e) {
+        alert("Errore registrazione: " + e.message);
+        console.error(e);
+      }
+    }
+
+    async function login() {
+      try {
+        const email = document.getElementById('email').value;
+        const password = document.getElementById('password').value;
+        await auth.signInWithEmailAndPassword(email, password);
+        myEmail = email;
+
+        myKeyPair = nacl.box.keyPair();
+        const publicKeyBase64 = nacl.util.encodeBase64(myKeyPair.publicKey);
+        await db.collection("users").doc(email).set({ publicKey: publicKeyBase64 });
+
+        alert("Login effettuato!");
+        await loadUsers();
+        listenForMessages();
+      } catch (e) {
+        alert("Errore login: " + e.message);
+        console.error(e);
+      }
+    }
+
+    async function loadUsers() {
+      const select = document.getElementById('recipient');
+      select.innerHTML = '';
+      const snapshot = await db.collection("users").get();
+      snapshot.forEach(doc => {
+        const userEmail = doc.id;
+        if (userEmail !== myEmail) {
+          const option = document.createElement('option');
+          option.value = userEmail;
+          option.textContent = userEmail;
+          select.appendChild(option);
+        }
+      });
+    }
+
+    async function sendMessage() {
+      const recipientEmail = document.getElementById('recipient').value;
+      const message = document.getElementById('message').value;
+
+      if (!recipientEmail) {
+        alert("Seleziona un destinatario");
+        return;
+      }
+      if (!message) {
+        alert("Scrivi un messaggio");
+        return;
+      }
+
+      const doc = await db.collection("users").doc(recipientEmail).get();
+      if (!doc.exists) {
+        alert("Destinatario non trovato");
+        return;
+      }
+      const recipientPubKeyBase64 = doc.data().publicKey;
+      const recipientPubKey = nacl.util.decodeBase64(recipientPubKeyBase64);
+
+      const nonce = nacl.randomBytes(24);
+      const messageUint8 = nacl.util.decodeUTF8(message);
+      const encrypted = nacl.box(messageUint8, nonce, recipientPubKey, myKeyPair.secretKey);
+
+      await db.collection("messages").add({
+        from: myEmail,
+        to: recipientEmail,
+        nonce: nacl.util.encodeBase64(nonce),
+        encrypted: nacl.util.encodeBase64(encrypted),
+        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+      });
+
+      document.getElementById('message').value = '';
+    }
+
+    function listenForMessages() {
+      db.collection("messages")
+        .where("to", "==", myEmail)
+        .orderBy("timestamp")
+        .onSnapshot(snapshot => {
+          const chat = document.getElementById('chat');
+          chat.innerHTML = '';
+          snapshot.forEach(doc => {
+            const data = doc.data();
+            const nonce = nacl.util.decodeBase64(data.nonce);
+            const encrypted = nacl.util.decodeBase64(data.encrypted);
+            const senderEmail = data.from;
+
+            db.collection("users").doc(senderEmail).get().then(senderDoc => {
+              const senderPubKeyBase64 = senderDoc.data().publicKey;
+              const senderPubKey = nacl.util.decodeBase64(senderPubKeyBase64);
+
+              const decryptedUint8 = nacl.box.open(encrypted, nonce, senderPubKey, myKeyPair.secretKey);
+              if (decryptedUint8) {
+                const decryptedMessage = nacl.util.encodeUTF8(decryptedUint8);
+                chat.innerHTML += `<p><b>${senderEmail}:</b> ${decryptedMessage}</p>`;
+              } else {
+                chat.innerHTML += `<p><b>${senderEmail}:</b> [Messaggio non decriptabile]</p>`;
+              }
+            });
+          });
+        });
+    }
+  </script>
+</body>
+</html>
