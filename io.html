@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Public Encrypted Chat</title>
+  <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@600&family=Roboto+Mono&display=swap" rel="stylesheet">
+  <style>
+    body {
+      margin: 0;
+      background: #0f0f0f;
+      font-family: 'Roboto Mono', monospace;
+      color: #00ff99;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      min-height: 100vh;
+    }
+    h1 {
+      font-family: 'Orbitron', sans-serif;
+      color: #00ffcc;
+      font-size: 3rem;
+      margin-bottom: 10px;
+      text-shadow: 0 0 10px #00ffcc;
+    }
+    #chat-container {
+      background: #1a1a1a;
+      border: 2px solid #00ff99;
+      border-radius: 15px;
+      padding: 20px;
+      width: 90%;
+      max-width: 700px;
+      box-shadow: 0 0 20px #00ff99;
+    }
+    #chat {
+      height: 400px;
+      overflow-y: scroll;
+      background: #000;
+      padding: 10px;
+      border-radius: 10px;
+      border: 1px solid #00ff99;
+      margin-bottom: 15px;
+    }
+    input, button {
+      padding: 10px;
+      margin: 5px;
+      font-size: 1rem;
+      border-radius: 5px;
+      border: none;
+    }
+    input {
+      width: calc(100% - 22px);
+      background: #0f0f0f;
+      color: #00ff99;
+      border: 1px solid #00ff99;
+    }
+    button {
+      background: #00ff99;
+      color: #000;
+      cursor: pointer;
+      transition: background 0.3s;
+    }
+    button:hover {
+      background: #00cc77;
+    }
+    .message {
+      margin: 5px 0;
+    }
+    .message b {
+      color: #00ccff;
+    }
+  </style>
+</head>
+<body>
+  <h1>Public Encrypted Chat</h1>
+  <div id="chat-container">
+    <div id="chat"></div>
+    <input id="message" placeholder="Scrivi un messaggio...">
+    <button onclick="sendMessage()">Invia</button>
+  </div>
+
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-app.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/10.0.0/firebase-firestore.js"></script>
+
+  <script>
+    const firebaseConfig = {
+  apiKey: "AIzaSyAZ_ew3jUGe3g261iraxqALx9_5LSUCXQ8",
+  authDomain: "chat-6543d.firebaseapp.com",
+  projectId: "chat-6543d",
+  storageBucket: "chat-6543d.firebasestorage.app",
+  messagingSenderId: "960913649179",
+  appId: "1:960913649179:web:85476e659ad66a7d2b52be"
+};
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.firestore();
+
+    const password = 'gnomoarmatodiascia';
+
+    async function encryptMessage(message) {
+      const pwUtf8 = new TextEncoder().encode(password);
+      const pwHash = await crypto.subtle.digest('SHA-256', pwUtf8);
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const alg = { name: 'AES-GCM', iv };
+      const key = await crypto.subtle.importKey('raw', pwHash, alg, false, ['encrypt']);
+      const enc = new TextEncoder().encode(message);
+      const encrypted = await crypto.subtle.encrypt(alg, key, enc);
+      return {
+        iv: Array.from(iv),
+        data: Array.from(new Uint8Array(encrypted))
+      };
+    }
+
+    async function decryptMessage(encryptedData) {
+      try {
+        const pwUtf8 = new TextEncoder().encode(password);
+        const pwHash = await crypto.subtle.digest('SHA-256', pwUtf8);
+        const iv = new Uint8Array(encryptedData.iv);
+        const alg = { name: 'AES-GCM', iv };
+        const key = await crypto.subtle.importKey('raw', pwHash, alg, false, ['decrypt']);
+        const encryptedBytes = new Uint8Array(encryptedData.data);
+        const decrypted = await crypto.subtle.decrypt(alg, key, encryptedBytes);
+        return new TextDecoder().decode(decrypted);
+      } catch {
+        return '[Messaggio non leggibile]';
+      }
+    }
+
+    async function sendMessage() {
+      const msgInput = document.getElementById('message');
+      const msg = msgInput.value.trim();
+      if (!msg) return;
+      const encrypted = await encryptMessage(msg);
+      await db.collection("publicChat").add({
+        iv: encrypted.iv,
+        data: encrypted.data,
+        timestamp: firebase.firestore.FieldValue.serverTimestamp()
+      });
+      msgInput.value = '';
+    }
+
+    db.collection("publicChat").orderBy("timestamp").onSnapshot(snapshot => {
+      const chat = document.getElementById('chat');
+      chat.innerHTML = '';
+      snapshot.docs.forEach(async doc => {
+        const data = doc.data();
+        const decryptedMessage = await decryptMessage(data);
+        chat.innerHTML += `<div class='message'><b>Anon:</b> ${decryptedMessage}</div>`;
+        chat.scrollTop = chat.scrollHeight;
+      });
+    });
+  </script>
+</body>
+</html>
